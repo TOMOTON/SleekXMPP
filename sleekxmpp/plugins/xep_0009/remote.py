@@ -611,6 +611,9 @@ class RemoteSession(object):
         iq.enable('rpc_query')
         args = xml2py(iq['rpc_query']['method_response']['params'])
         pid = iq['id']
+
+        log.debug("_on_jabber_rpc_method_response: %s", pid)
+        
         with self._lock:
             callback = self._callbacks[pid]
             del self._callbacks[pid]
@@ -629,7 +632,7 @@ class RemoteSession(object):
             pid = iq['id']
             with self._lock:
                 callback = self._callbacks[pid]
-                del self._callbacks[pid]
+                self.forget_callback(pid)
             if(len(args) > 0):
                 callback.set_value(args[0])
             else:
@@ -669,7 +672,7 @@ class RemoteSession(object):
 
 class Remote(object):
     '''
-    Bootstrap class for Jabber-RPC sessions. New sessions are openend
+    Bootstrap class for Jabber-RPC sessions. New sessions are opened
     with an existing XMPP client, or one is instantiated on demand.
     '''
 
@@ -684,7 +687,7 @@ class Remote(object):
 
         Arguments:
             client -- An XMPP client.
-            client_owned -- Are we responsible for the client
+            client_owned -- Are we (Remote class) responsible for the client
         '''
        
         with Remote._lock:
@@ -707,8 +710,9 @@ class Remote(object):
                 
         session = RemoteSession(client, _session_close_callback)
 
-        # TODO: can we just register multiple times ?        
-        client.registerPlugin('xep_0009')
+        # we need xep_0009        
+        if not client['xep_0009']:
+            client.registerPlugin('xep_0009')
 
         client.plugin['xep_0009'].xmpp.add_event_handler('jabber_rpc_method_call', session._on_jabber_rpc_method_call)
         client.plugin['xep_0009'].xmpp.add_event_handler('jabber_rpc_method_response', session._on_jabber_rpc_method_response)
@@ -740,10 +744,10 @@ class Remote(object):
         client.registerPlugin('xep_0060') # PubSub
         client.registerPlugin('xep_0199') # XMPP Ping
         
-        session = cls.new_session_with_client(client, callback, client_owned = True)
+        session = cls.new_session_with_client(client, True)
 
         if callback:
-            client.add_event_handler("session_start", start_event_handler)
+            client.add_event_handler("session_start", callback)
 
         if client.connect():
             client.process(threaded=True)
@@ -753,4 +757,4 @@ class Remote(object):
         if callback is None:
             session._wait()
 
-        return result
+        return session

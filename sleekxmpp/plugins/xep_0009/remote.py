@@ -210,6 +210,14 @@ class AuthorizationException(RemoteException):
     pass
 
 
+class UnavailableException(RemoteException):
+    '''
+    Exception raised when the callee is not available to respond 
+    to remote invocations
+    '''
+    pass
+
+
 class TimeoutException(Exception):
     '''
     Exception raised when the synchronous execution of a method takes
@@ -657,17 +665,16 @@ class RemoteSession(object):
         code = iq['error']['code']
         type = iq['error']['type']
         condition = iq['error']['condition']
-        #! print("['REMOTE.PY']._BINDING_handle_remote_procedure_error -> ERROR! ERROR! ERROR! Condition is '%s'" % condition)
         with self._lock:
             callback = self._callbacks[pid]
             del self._callbacks[pid]
         e = {
-            'item-not-found': RemoteException("No remote handler available for %s at %s!" % (pmethod, iq['from'])),
+            'item-not-found': InvocationException("No remote handler available for %s at %s!" % (pmethod, iq['from'])),
             'forbidden': AuthorizationException("Forbidden to invoke remote handler for %s at %s!" % (pmethod, iq['from'])),
-            'undefined-condition': RemoteException("An unexpected problem occured trying to invoke %s at %s!" % (pmethod, iq['from'])),
+            'service-unavailable': UnavailableException("No remote entity %s available to handle %s!" % (iq['from'], pmethod)),
         }[condition]
         if e is None:
-            RemoteException("An unexpected exception occurred at %s!" % iq['from'])
+            e = RemoteException("An unexpected problem occurred trying to invoke %s at %s!" % (pmethod, iq['from']))
         callback.cancel_with_error(e)
 
 

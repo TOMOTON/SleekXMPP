@@ -660,21 +660,25 @@ class RemoteSession(object):
         callback.cancel_with_error(e)
 
     def _on_jabber_rpc_error(self, iq):
+        iq.enable('rpc_query')
+        pmethod = iq['rpc_query']['method_call']['method_name']
         pid = iq['id']
-        pmethod = self._client.plugin['xep_0009']._extract_method(iq['rpc_query'])
         code = iq['error']['code']
         type = iq['error']['type']
         condition = iq['error']['condition']
         with self._lock:
             callback = self._callbacks[pid]
             del self._callbacks[pid]
-        e = {
-            'item-not-found': InvocationException("No remote handler available for %s at %s!" % (pmethod, iq['from'])),
-            'forbidden': AuthorizationException("Forbidden to invoke remote handler for %s at %s!" % (pmethod, iq['from'])),
-            'service-unavailable': UnavailableException("No remote entity %s available to handle %s!" % (iq['from'], pmethod)),
-        }[condition]
-        if e is None:
+        
+        if condition == 'item-not-found':
+            e = InvocationException("No remote handler available for %s at %s!" % (pmethod, iq['from'])),
+        elif condition == 'forbidden':
+            e = AuthorizationException("Forbidden to invoke remote handler for %s at %s!" % (pmethod, iq['from'])),
+        elif condition == 'service-unavailable':
+            e = UnavailableException("No remote entity %s available to handle %s!" % (iq['from'], pmethod)),
+        else:
             e = RemoteException("An unexpected problem occurred trying to invoke %s at %s!" % (pmethod, iq['from']))
+        
         callback.cancel_with_error(e)
 
 class Remote(object):

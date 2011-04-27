@@ -208,6 +208,3 @@ class xep_0009(base.base_plugin):
         fault = self.make_iq_method_response_fault(iq['id'], iq['from'], fault_xml)
         fault.send()
 
-    def _extract_method(self, stanza):
-        xml = ET.fromstring("%s" % stanza)
-        return xml.find("./methodCall/methodName").text

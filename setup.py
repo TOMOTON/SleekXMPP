@@ -12,6 +12,16 @@
 from distutils.core import setup
 import sys
 
+# the 'import sleekxmpp' command is pulling in too many modules
+# making it fail in the OpenWRT cross-compilation environment
+#
+# HACK: we are avoiding the issue by making python believe it already
+# imported the modules
+#
+# this works as the only thing used from the import is __version__
+sys.modules["threading"] = {}
+sys.modules["ssl"] = {}
+
 import sleekxmpp
 
 # if 'cygwin' in sys.platform.lower():

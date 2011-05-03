@@ -19,8 +19,15 @@ import sys
 # imported the modules
 #
 # this works as the only thing used from the import is __version__
-sys.modules["threading"] = {}
-sys.modules["ssl"] = {}
+try:
+    import threading
+except:
+    sys.modules["threading"] = {}
+
+try:
+    import ssl
+except:
+    sys.modules["ssl"] = {}
 
 import sleekxmpp
 

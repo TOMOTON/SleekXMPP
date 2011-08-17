@@ -11,6 +11,7 @@ from sleekxmpp.stanza.rootstanza import RootStanza
 from sleekxmpp.xmlstream import StanzaBase, ET
 from sleekxmpp.xmlstream.handler import Waiter, Callback
 from sleekxmpp.xmlstream.matcher import MatcherId
+from sleekxmpp.exceptions import IqTimeout, IqError
 
 
 class Iq(RootStanza):
@@ -154,7 +155,7 @@ class Iq(RootStanza):
         StanzaBase.reply(self, clear)
         return self
 
-    def send(self, block=True, timeout=None, callback=None):
+    def send(self, block=True, timeout=None, callback=None, now=False):
         """
         Send an <iq> stanza over the XML stream.
 
@@ -178,6 +179,9 @@ class Iq(RootStanza):
                         Defaults to sleekxmpp.xmlstream.RESPONSE_TIMEOUT
             callback -- Optional reference to a stream handler function. Will
                         be executed when a reply stanza is received.
+            now      -- Indicates if the send queue should be skipped and send
+                        the stanza immediately. Used during stream
+                        initialization. Defaults to False.
         """
         if timeout is None:
             timeout = self.stream.response_timeout
@@ -188,15 +192,20 @@ class Iq(RootStanza):
                                callback,
                                once=True)
             self.stream.register_handler(handler)
-            StanzaBase.send(self)
+            StanzaBase.send(self, now=now)
             return handler_name
         elif block and self['type'] in ('get', 'set'):
             waitfor = Waiter('IqWait_%s' % self['id'], MatcherId(self['id']))
             self.stream.register_handler(waitfor)
-            StanzaBase.send(self)
-            return waitfor.wait(timeout)
+            StanzaBase.send(self, now=now)
+            result = waitfor.wait(timeout)
+            if not result:
+                raise IqTimeout(self)
+            if result['type'] == 'error':
+                raise IqError(result)
+            return result
         else:
-            return StanzaBase.send(self)
+            return StanzaBase.send(self, now=now)
 
     def _set_stanza_values(self, values):
         """

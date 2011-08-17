@@ -1,4 +1,6 @@
 *.pyc
 build/
-/.project
-/.pydevproject
+dist/
+MANIFEST
+docs/_build/
+*.swp

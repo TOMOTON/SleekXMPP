@@ -15,6 +15,7 @@ import logging
 import sleekxmpp
 from sleekxmpp import plugins
 
+import sleekxmpp.roster as roster
 from sleekxmpp.stanza import Message, Presence, Iq, Error, StreamError
 from sleekxmpp.stanza.roster import Roster
 from sleekxmpp.stanza.nick import Nick
@@ -78,7 +79,7 @@ class BaseXMPP(XMLStream):
        send_presence_subscribe -- Send a subscription request.
     """
 
-    def __init__(self, default_ns='jabber:client'):
+    def __init__(self, jid='', default_ns='jabber:client'):
         """
         Adapt an XML stream for use with XMPP.
 
@@ -92,18 +93,25 @@ class BaseXMPP(XMLStream):
         # Deprecated method names are re-mapped for backwards compatibility.
         self.default_ns = default_ns
         self.stream_ns = 'http://etherx.jabber.org/streams'
+        self.namespace_map[self.stream_ns] = 'stream'
 
-        self.boundjid = JID("")
+        self.boundjid = JID(jid)
 
         self.plugin = {}
         self.plugin_config = {}
         self.plugin_whitelist = []
-        self.roster = {}
+
+        self.roster = roster.Roster(self)
+        self.roster.add(self.boundjid.bare)
+        self.client_roster = self.roster[self.boundjid.bare]
+
         self.is_component = False
         self.auto_authorize = True
         self.auto_subscribe = True
 
         self.sentpresence = False
+
+        self.stanza = sleekxmpp.stanza
 
         self.register_handler(
             Callback('IM',
@@ -119,10 +127,30 @@ class BaseXMPP(XMLStream):
                      MatchXPath("{%s}error" % self.stream_ns),
                      self._handle_stream_error))
 
-        self.add_event_handler('presence_subscribe',
-                               self._handle_subscribe)
         self.add_event_handler('disconnected',
                                self._handle_disconnected)
+        self.add_event_handler('presence_available',
+                               self._handle_available)
+        self.add_event_handler('presence_dnd',
+                               self._handle_available)
+        self.add_event_handler('presence_xa',
+                               self._handle_available)
+        self.add_event_handler('presence_chat',
+                               self._handle_available)
+        self.add_event_handler('presence_away',
+                               self._handle_available)
+        self.add_event_handler('presence_unavailable',
+                               self._handle_unavailable)
+        self.add_event_handler('presence_subscribe',
+                               self._handle_subscribe)
+        self.add_event_handler('presence_subscribed',
+                               self._handle_subscribed)
+        self.add_event_handler('presence_unsubscribe',
+                               self._handle_unsubscribe)
+        self.add_event_handler('presence_unsubscribed',
+                               self._handle_unsubscribed)
+        self.add_event_handler('roster_subscription_request',
+                               self._handle_new_subscription)
 
         # Set up the XML stream with XMPP's root stanzas.
         self.register_stanza(Message)
@@ -135,12 +163,41 @@ class BaseXMPP(XMLStream):
         register_stanza_plugin(Message, Nick)
         register_stanza_plugin(Message, HTMLIM)
 
+    def start_stream_handler(self, xml):
+        """
+        Save the stream ID once the streams have been established.
+
+        Overrides XMLStream.start_stream_handler.
+
+        Arguments:
+            xml -- The incoming stream's root element.
+        """
+        self.stream_id = xml.get('id', '')
+
     def process(self, *args, **kwargs):
         """
-        Ensure that plugin inter-dependencies are handled before starting
-        event processing.
-
         Overrides XMLStream.process.
+
+        Initialize the XML streams and begin processing events.
+
+        The number of threads used for processing stream events is determined
+        by HANDLER_THREADS.
+
+        Arguments:
+            block -- If block=False then event dispatcher will run
+                     in a separate thread, allowing for the stream to be
+                     used in the background for another application.
+                     Otherwise, process(block=True) blocks the current thread.
+                     Defaults to False.
+
+            **threaded is deprecated and included for API compatibility**
+            threaded -- If threaded=True then event dispatcher will run
+                        in a separate thread, allowing for the stream to be
+                        used in the background for another application.
+                        Defaults to True.
+
+            Event handlers and the send queue will be threaded
+            regardless of these parameters.
         """
         for name in self.plugin:
             if not self.plugin[name].post_inited:
@@ -162,23 +219,36 @@ class BaseXMPP(XMLStream):
         try:
             # Import the given module that contains the plugin.
             if not module:
-                module = sleekxmpp.plugins
-                module = __import__("%s.%s" % (module.__name__, plugin),
-                                    globals(), locals(), [plugin])
+                try:
+                    module = sleekxmpp.plugins
+                    module = __import__(
+                            str("%s.%s" % (module.__name__, plugin)),
+                            globals(), locals(), [str(plugin)])
+                except ImportError:
+                    module = sleekxmpp.features
+                    module = __import__(
+                            str("%s.%s" % (module.__name__, plugin)),
+                            globals(), locals(), [str(plugin)])
             if isinstance(module, str):
                 # We probably want to load a module from outside
                 # the sleekxmpp package, so leave out the globals().
                 module = __import__(module, fromlist=[plugin])
 
+            # Use the global plugin config cache, if applicable
+            if not pconfig:
+                pconfig = self.plugin_config.get(plugin, {})
+
             # Load the plugin class from the module.
             self.plugin[plugin] = getattr(module, plugin)(self, pconfig)
 
-            # Let XEP implementing plugins have some extra logging info.
-            xep = ''
-            if hasattr(self.plugin[plugin], 'xep'):
-                xep = "(XEP-%s) " % self.plugin[plugin].xep
+            # Let XEP/RFC implementing plugins have some extra logging info.
+            spec = '(CUSTOM) '
+            if self.plugin[plugin].xep:
+                spec = "(XEP-%s) " % self.plugin[plugin].xep
+            elif self.plugin[plugin].rfc:
+                spec = "(RFC-%s) " % self.plugin[plugin].rfc
 
-            desc = (xep, self.plugin[plugin].description)
+            desc = (spec, self.plugin[plugin].description)
             log.debug("Loaded Plugin %s%s" % desc)
         except:
             log.exception("Unable to load plugin: %s", plugin)
@@ -401,7 +471,7 @@ class BaseXMPP(XMLStream):
             msubject -- Optional subject for the message.
             mtype    -- The message's type, such as 'chat' or 'groupchat'.
             mhtml    -- Optional HTML body content.
-            mfrom    -- The sender of the message. If sending from a client,
+            mfrom    -- The sender of the message. if sending from a client,
                         be aware that some servers require that the full JID
                         of the sender be used.
             mnick    -- Optional nickname of the sender.
@@ -416,7 +486,7 @@ class BaseXMPP(XMLStream):
         return message
 
     def make_presence(self, pshow=None, pstatus=None, ppriority=None,
-                      pto=None, ptype=None, pfrom=None):
+                      pto=None, ptype=None, pfrom=None, pnick=None):
         """
         Create and initialize a new Presence stanza.
 
@@ -427,14 +497,16 @@ class BaseXMPP(XMLStream):
             pto       -- The recipient of a directed presence.
             ptype     -- The type of presence, such as 'subscribe'.
             pfrom     -- The sender of the presence.
+            pnick     -- Optional nickname of the presence's sender.
         """
         presence = self.Presence(stype=ptype, sfrom=pfrom, sto=pto)
         if pshow is not None:
             presence['type'] = pshow
-        if pfrom is None:
+        if pfrom is None and self.is_component:
             presence['from'] = self.boundjid.full
         presence['priority'] = ppriority
         presence['status'] = pstatus
+        presence['nick'] = pnick
         return presence
 
     def send_message(self, mto, mbody, msubject=None, mtype=None,
@@ -442,13 +514,22 @@ class BaseXMPP(XMLStream):
         """
         Create, initialize, and send a Message stanza.
 
-
+        Arguments:
+            mto      -- The recipient of the message.
+            mbody    -- The main contents of the message.
+            msubject -- Optional subject for the message.
+            mtype    -- The message's type, such as 'chat' or 'groupchat'.
+            mhtml    -- Optional HTML body content.
+            mfrom    -- The sender of the message. if sending from a client,
+                        be aware that some servers require that the full JID
+                        of the sender be used.
+            mnick    -- Optional nickname of the sender.
         """
-        self.makeMessage(mto, mbody, msubject, mtype,
-                         mhtml, mfrom, mnick).send()
+        self.make_message(mto, mbody, msubject, mtype,
+                          mhtml, mfrom, mnick).send()
 
     def send_presence(self, pshow=None, pstatus=None, ppriority=None,
-                      pto=None, pfrom=None, ptype=None):
+                      pto=None, pfrom=None, ptype=None, pnick=None):
         """
         Create, initialize, and send a Presence stanza.
 
@@ -459,13 +540,20 @@ class BaseXMPP(XMLStream):
             pto       -- The recipient of a directed presence.
             ptype     -- The type of presence, such as 'subscribe'.
             pfrom     -- The sender of the presence.
+            pnick     -- Optional nickname of the presence's sender.
         """
-        self.makePresence(pshow, pstatus, ppriority, pto,
-                          ptype=ptype, pfrom=pfrom).send()
-        # Unexpected errors may occur if
-        if not self.sentpresence:
-            self.event('sent_presence')
-            self.sentpresence = True
+        # Python2.6 chokes on Unicode strings for dict keys.
+        args = {str('pto'): pto,
+                str('ptype'): ptype,
+                str('pshow'): pshow,
+                str('pstatus'): pstatus,
+                str('ppriority'): ppriority,
+                str('pnick'): pnick}
+
+        if self.is_component:
+            self.roster[pfrom].send_presence(**args)
+        else:
+            self.client_roster.send_presence(**args)
 
     def send_presence_subscription(self, pto, pfrom=None,
                                    ptype='subscribe', pnick=None):
@@ -568,7 +656,7 @@ class BaseXMPP(XMLStream):
 
     def _handle_disconnected(self, event):
         """When disconnected, reset the roster"""
-        self.roster = {}
+        self.roster.reset()
 
     def _handle_stream_error(self, error):
         self.event('stream_error', error)
@@ -577,12 +665,72 @@ class BaseXMPP(XMLStream):
         """Process incoming message stanzas."""
         self.event('message', msg)
 
+    def _handle_available(self, presence):
+        pto = presence['to'].bare
+        pfrom = presence['from'].bare
+        self.roster[pto][pfrom].handle_available(presence)
+
+    def _handle_unavailable(self, presence):
+        pto = presence['to'].bare
+        pfrom = presence['from'].bare
+        self.roster[pto][pfrom].handle_unavailable(presence)
+
+    def _handle_new_subscription(self, stanza):
+        """
+        Attempt to automatically handle subscription requests.
+
+        Subscriptions will be approved if the request is from
+        a whitelisted JID, of self.auto_authorize is True. They
+        will be rejected if self.auto_authorize is False. Setting
+        self.auto_authorize to None will disable automatic
+        subscription handling (except for whitelisted JIDs).
+
+        If a subscription is accepted, a request for a mutual
+        subscription will be sent if self.auto_subscribe is True.
+        """
+        roster = self.roster[stanza['to'].bare]
+        item = self.roster[stanza['to'].bare][stanza['from'].bare]
+        if item['whitelisted']:
+            item.authorize()
+        elif roster.auto_authorize:
+            item.authorize()
+            if roster.auto_subscribe:
+                item.subscribe()
+        elif roster.auto_authorize == False:
+            item.unauthorize()
+
+    def _handle_removed_subscription(self, presence):
+        pto = presence['to'].bare
+        pfrom = presence['from'].bare
+        self.roster[pto][pfrom].unauthorize()
+
+    def _handle_subscribe(self, presence):
+        pto = presence['to'].bare
+        pfrom = presence['from'].bare
+        self.roster[pto][pfrom].handle_subscribe(presence)
+
+    def _handle_subscribed(self, presence):
+        pto = presence['to'].bare
+        pfrom = presence['from'].bare
+        self.roster[pto][pfrom].handle_subscribed(presence)
+
+    def _handle_unsubscribe(self, presence):
+        pto = presence['to'].bare
+        pfrom = presence['from'].bare
+        self.roster[pto][pfrom].handle_unsubscribe(presence)
+
+    def _handle_unsubscribed(self, presence):
+        pto = presence['to'].bare
+        pfrom = presence['from'].bare
+        self.roster[pto][pfrom].handle_unsubscribed(presence)
+
     def _handle_presence(self, presence):
         """
         Process incoming presence stanzas.
 
         Update the roster with presence information.
         """
+        logging.debug(presence['type'])
         self.event("presence_%s" % presence['type'], presence)
 
         # Check for changes in subscription state.
@@ -594,96 +742,7 @@ class BaseXMPP(XMLStream):
              not presence['type'] in presence.showtypes:
             return
 
-        # Strip the information from the stanza.
-        jid = presence['from'].bare
-        resource = presence['from'].resource
-        show = presence['type']
-        status = presence['status']
-        priority = presence['priority']
-
-        was_offline = False
-        got_online = False
-        old_roster = self.roster.get(jid, {}).get(resource, {})
-
-        # Create a new roster entry if needed.
-        if not jid in self.roster:
-            self.roster[jid] = {'groups': [],
-                                'name': '',
-                                'subscription': 'none',
-                                'presence': {},
-                                'in_roster': False}
-
-        # Alias to simplify some references.
-        connections = self.roster[jid]['presence']
-
-        # Determine if the user has just come online.
-        if not resource in connections:
-            if show == 'available' or show in presence.showtypes:
-                got_online = True
-            was_offline = True
-            connections[resource] = {}
-
-        if connections[resource].get('show', 'unavailable') == 'unavailable':
-            was_offline = True
-
-        # Update the roster's state for this JID's resource.
-        connections[resource] = {'show': show,
-                                'status': status,
-                                'priority': priority}
-
-        name = self.roster[jid].get('name', '')
-
-        # Remove unneeded state information after a resource
-        # disconnects. Determine if this was the last connection
-        # for the JID.
-        if show == 'unavailable':
-            log.debug("%s %s got offline" % (jid, resource))
-            del connections[resource]
-
-            if not connections and not self.roster[jid]['in_roster']:
-                del self.roster[jid]
-            if not was_offline:
-                self.event("got_offline", presence)
-            else:
-                return False
-
-        name = '(%s) ' % name if name else ''
-
-        # Presence state has changed.
         self.event("changed_status", presence)
-        if got_online:
-            self.event("got_online", presence)
-        log.debug("STATUS: %s%s/%s[%s]: %s" % (name, jid, resource,
-                                                   show, status))
-
-    def _handle_subscribe(self, presence):
-        """
-        Automatically managage subscription requests.
-
-        Subscription behavior is controlled by the settings
-        self.auto_authorize and self.auto_subscribe.
-
-        auto_auth  auto_sub   Result:
-        True       True       Create bi-directional subsriptions.
-        True       False      Create only directed subscriptions.
-        False      *          Decline all subscriptions.
-        None       *          Disable automatic handling and use
-                              a custom handler.
-        """
-        presence.reply()
-        presence['to'] = presence['to'].bare
-
-        # We are using trinary logic, so conditions have to be
-        # more explicit than usual.
-        if self.auto_authorize == True:
-            presence['type'] = 'subscribed'
-            presence.send()
-            if self.auto_subscribe:
-                presence['type'] = 'subscribe'
-                presence.send()
-        elif self.auto_authorize == False:
-            presence['type'] = 'unsubscribed'
-            presence.send()
 
 # Restore the old, lowercased name for backwards compatibility.
 basexmpp = BaseXMPP

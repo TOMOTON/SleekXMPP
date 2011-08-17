@@ -90,7 +90,10 @@ class TestHandlers(SleekTest):
             iq['id'] = 'test2'
             iq['type'] = 'set'
             iq['query'] = 'test2'
-            reply = iq.send(block=True, timeout=0)
+            try:
+                reply = iq.send(block=True, timeout=0)
+            except IqTimeout:
+                pass
 
         self.xmpp.add_event_handler('message', waiter_handler, threaded=True)
 
@@ -103,6 +106,9 @@ class TestHandlers(SleekTest):
         iq['type'] = 'set'
         iq['query'] = 'test2'
         self.send(iq)
+
+        # Give the event queue time to process.
+        time.sleep(0.1)
 
         # Check that the waiter is no longer registered
         waiter_exists = self.xmpp.removeHandler('IqWait_test2')

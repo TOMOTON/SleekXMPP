@@ -482,7 +482,8 @@ class ElementBase(object):
                     if plugin:
                         if plugin not in self.plugins:
                             self.init_plugin(plugin)
-                        handler = getattr(self.plugins[plugin], set_method, None)
+                        handler = getattr(self.plugins[plugin],
+                                          set_method, None)
                         if handler:
                             return handler(value)
 
@@ -1064,7 +1065,9 @@ class ElementBase(object):
                             Defaults to True.
         """
         stanza_ns = '' if top_level_ns else self.namespace
-        return tostring(self.xml, xmlns='', stanza_ns=stanza_ns)
+        return tostring(self.xml, xmlns='',
+                        stanza_ns=stanza_ns,
+                        top_level=not top_level_ns)
 
     def __repr__(self):
         """
@@ -1253,9 +1256,15 @@ class StanzaBase(ElementBase):
         log.exception('Error handling {%s}%s stanza' % (self.namespace,
                                                             self.name))
 
-    def send(self):
-        """Queue the stanza to be sent on the XML stream."""
-        self.stream.sendRaw(self.__str__())
+    def send(self, now=False):
+        """
+        Queue the stanza to be sent on the XML stream.
+        Arguments:
+            now -- Indicates if the queue should be skipped and the
+                   stanza sent immediately. Useful for stream
+                   initialization. Defaults to False.
+        """
+        self.stream.send_raw(self.__str__(), now=now)
 
     def __copy__(self):
         """
@@ -1276,7 +1285,8 @@ class StanzaBase(ElementBase):
         stanza_ns = '' if top_level_ns else self.namespace
         return tostring(self.xml, xmlns='',
                         stanza_ns=stanza_ns,
-                        stream=self.stream)
+                        stream=self.stream,
+                        top_level=not top_level_ns)
 
 
 # To comply with PEP8, method names now use underscores.
